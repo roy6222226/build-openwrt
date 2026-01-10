@@ -92,7 +92,7 @@ clone_all() {
 
 
 # =========================================================
-# 2. 整合 roy6222226/fanchmwrt 的代码 (新增功能)
+# 2. 整合 roy6222226/fanchmwrt 的代码
 # =========================================================
 echo "正在整合 FanchmWrt 插件..."
 
@@ -103,12 +103,21 @@ git clone --depth 1 https://github.com/roy6222226/fanchmwrt.git "$TEMP_DIR"
 if [ -d "$TEMP_DIR/package" ]; then
     # 使用 cp -rn (不覆盖模式)，只提取 ImmortalWrt 没有的插件
     cp -rn "$TEMP_DIR/package/"* package/
-    print_info $(color cg 整合) "FanchmWrt Packages" [ $(color cg ✔) ]
+    
+    # 🚨🚨🚨 【新增的核心修正步骤】 🚨🚨🚨
+    # 删除从 FanchmWrt (Master) 误复制进来的不兼容系统核心包
+    # 这些包在 23.05 上编译必挂，必须删掉！
+    echo "正在清理不兼容的 Master 核心包..."
+    rm -rf package/system/apk
+    rm -rf package/system/installer
+    rm -rf package/base-files
+    rm -rf package/kernel
+    
+    print_info $(color cg 整合) "FanchmWrt Packages (已清理冲突)" [ $(color cg ✔) ]
 else
     print_info $(color cr 错误) "FanchmWrt package dir not found" [ $(color cr ✕) ]
 fi
 rm -rf "$TEMP_DIR"
-
 
 # =========================================================
 # 3. 下载第三方插件 (基于原脚本)
