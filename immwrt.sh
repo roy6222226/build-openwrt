@@ -1,18 +1,8 @@
 #!/bin/bash
 
-# 打包toolchain目录
-if [[ $REBUILD_TOOLCHAIN = 'true' ]]; then
-    cd $OPENWRT_PATH
-    sed -i 's/ $(tool.*\/stamp-compile)//' Makefile
-    [ -d ".ccache" ] && (ccache=".ccache"; ls -alh .ccache)
-    du -h --max-depth=1 ./staging_dir
-    tar -I zstdmt -cf $GITHUB_WORKSPACE/output/$CACHE_NAME.tzst staging_dir/host* staging_dir/tool* $ccache
-    ls -lh $GITHUB_WORKSPACE/output
-    [ -e $GITHUB_WORKSPACE/output/$CACHE_NAME.tzst ] || exit 1
-    exit 0
-fi
-
-[ -d $GITHUB_WORKSPACE/output ] || mkdir $GITHUB_WORKSPACE/output
+# =========================================================
+# 1. 预置函数定义 (保留原脚本的工具函数)
+# =========================================================
 
 color() {
     case $1 in
@@ -25,28 +15,15 @@ color() {
     esac
 }
 
-status() {
-    local check=$? end_time=$(date '+%H:%M:%S') total_time
-    total_time="==> 用时 $[$(date +%s -d $end_time) - $(date +%s -d $begin_time)] 秒"
-    [[ $total_time =~ [0-9]+ ]] || total_time=""
-    if [[ $check = 0 ]]; then
-        printf "%-62s %s %s %s %s %s %s %s\n" \
-        $(color cy $1) [ $(color cg ✔) ] $(echo -e "\e[1m$total_time")
-    else
-        printf "%-62s %s %s %s %s %s %s %s\n" \
-        $(color cy $1) [ $(color cr ✕) ] $(echo -e "\e[1m$total_time")
-    fi
+print_info() {
+    printf "%s %-40s %s %s %s\n" $1 $2 $3 $4 $5
 }
 
 find_dir() {
     find $1 -maxdepth 3 -type d -name $2 -print -quit 2>/dev/null
 }
 
-print_info() {
-    printf "%s %-40s %s %s %s\n" $1 $2 $3 $4 $5
-}
-
-# 添加整个源仓库(git clone)
+# 核心克隆函数
 git_clone() {
     local repo_url branch target_dir current_dir
     if [[ "$1" == */* ]]; then
@@ -62,22 +39,17 @@ git_clone() {
     else
         target_dir="${repo_url##*/}"
     fi
+    # 强制克隆到 package/A 下，方便管理
+    target_dir="package/A/$target_dir"
+    
     git clone -q $branch --depth=1 $repo_url $target_dir 2>/dev/null || {
         print_info $(color cr 拉取) $repo_url [ $(color cr ✕) ]
         return 0
     }
     rm -rf $target_dir/{.git*,README*.md,LICENSE}
-    current_dir=$(find_dir "package/ feeds/ target/" "$target_dir")
-    if ([[ -d $current_dir ]] && rm -rf $current_dir); then
-        mv -f $target_dir ${current_dir%/*}
-        print_info $(color cg 替换) $target_dir [ $(color cg ✔) ]
-    else
-        mv -f $target_dir $destination_dir
-        print_info $(color cb 添加) $target_dir [ $(color cb ✔) ]
-    fi
+    print_info $(color cb 添加) $target_dir [ $(color cb ✔) ]
 }
 
-# 添加源仓库内的指定目录
 clone_dir() {
     local repo_url branch temp_dir=$(mktemp -d)
     if [[ "$1" == */* ]]; then
@@ -88,32 +60,19 @@ clone_dir() {
         repo_url="$2"
         shift 2
     fi
-    git clone -q $branch --depth=1 $repo_url $temp_dir 2>/dev/null || {
-        print_info $(color cr 拉取) $repo_url [ $(color cr ✕) ]
-        return 0
-    }
-    local target_dir source_dir current_dir
+    git clone -q $branch --depth=1 $repo_url $temp_dir 2>/dev/null
+    local target_dir source_dir
     for target_dir in "$@"; do
         source_dir=$(find_dir "$temp_dir" "$target_dir")
-        [[ -d $source_dir ]] || \
-        source_dir=$(find $temp_dir -maxdepth 4 -type d -name $target_dir -print -quit) && \
-        [[ -d $source_dir ]] || {
-            print_info $(color cr 查找) $target_dir [ $(color cr ✕) ]
-            continue
-        }
-        current_dir=$(find_dir "package/ feeds/ target/" "$target_dir")
-        if ([[ -d $current_dir ]] && rm -rf $current_dir); then
-            mv -f $source_dir ${current_dir%/*}
-            print_info $(color cg 替换) $target_dir [ $(color cg ✔) ]
-        else
-            mv -f $source_dir $destination_dir
+        # 移动到 package/A
+        if [[ -d $source_dir ]]; then
+            mv -f $source_dir package/A/
             print_info $(color cb 添加) $target_dir [ $(color cb ✔) ]
         fi
     done
     rm -rf $temp_dir
 }
 
-# 添加源仓库内的所有目录
 clone_all() {
     local repo_url branch temp_dir=$(mktemp -d)
     if [[ "$1" == */* ]]; then
@@ -124,128 +83,57 @@ clone_all() {
         repo_url="$2"
         shift 2
     fi
-    git clone -q $branch --depth=1 $repo_url $temp_dir 2>/dev/null || {
-        print_info $(color cr 拉取) $repo_url [ $(color cr ✕) ]
-        return 0
-    }
-    local target_dir source_dir current_dir
-    for target_dir in $(ls -l $temp_dir/$@ | awk '/^d/ {print $NF}'); do
-        source_dir=$(find_dir "$temp_dir" "$target_dir")
-        current_dir=$(find_dir "package/ feeds/ target/" "$target_dir")
-        if ([[ -d $current_dir ]] && rm -rf $current_dir); then
-            mv -f $source_dir ${current_dir%/*}
-            print_info $(color cg 替换) $target_dir [ $(color cg ✔) ]
-        else
-            mv -f $source_dir $destination_dir
-            print_info $(color cb 添加) $target_dir [ $(color cb ✔) ]
-        fi
-    done
+    git clone -q $branch --depth=1 $repo_url $temp_dir 2>/dev/null
+    # 移动该仓库下所有文件夹到 package/A
+    cp -rf $temp_dir/* package/A/ 2>/dev/null
+    print_info $(color cb 添加) "Whole Repo: $repo_url" [ $(color cb ✔) ]
     rm -rf $temp_dir
 }
 
-# 设置编译源码与分支
-REPO_URL="https://github.com/immortalwrt/immortalwrt"
-echo "REPO_URL=$REPO_URL" >>$GITHUB_ENV
-REPO_BRANCH="openwrt-24.10"
-echo "REPO_BRANCH=$REPO_BRANCH" >>$GITHUB_ENV
 
-# 拉取编译源码
-begin_time=$(date '+%H:%M:%S')
-cd /workdir
-git clone -q -b $REPO_BRANCH --single-branch $REPO_URL openwrt
-status "拉取编译源码"
-ln -sf /workdir/openwrt $GITHUB_WORKSPACE/openwrt
-[ -d openwrt ] && cd openwrt || exit
-echo "OPENWRT_PATH=$PWD" >>$GITHUB_ENV
+# =========================================================
+# 2. 整合 roy6222226/fanchmwrt 的代码 (新增功能)
+# =========================================================
+echo "正在整合 FanchmWrt 插件..."
 
-# 生成全局变量
-begin_time=$(date '+%H:%M:%S')
-[ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp -f $GITHUB_WORKSPACE/$CONFIG_FILE .config
-make defconfig 1>/dev/null 2>&1
-rm -rf staging_dir logs tmp feeds
+TEMP_DIR="/tmp/roy_source"
+rm -rf "$TEMP_DIR"
+git clone --depth 1 https://github.com/roy6222226/fanchmwrt.git "$TEMP_DIR"
 
-# 源仓库与分支
-SOURCE_REPO=$(basename $REPO_URL)
-echo "SOURCE_REPO=$SOURCE_REPO" >>$GITHUB_ENV
-echo "LITE_BRANCH=${REPO_BRANCH#*-}" >>$GITHUB_ENV
-
-# 平台架构
-TARGET_NAME=$(awk -F '"' '/CONFIG_TARGET_BOARD/{print $2}' .config)
-SUBTARGET_NAME=$(awk -F '"' '/CONFIG_TARGET_SUBTARGET/{print $2}' .config)
-DEVICE_TARGET=$TARGET_NAME-$SUBTARGET_NAME
-echo "DEVICE_TARGET=$DEVICE_TARGET" >>$GITHUB_ENV
-
-# 内核版本
-KERNEL=$(grep -oP 'KERNEL_PATCHVER:=\K[^ ]+' target/linux/$TARGET_NAME/Makefile)
-if [ -e include/kernel-$KERNEL ]; then
-    KERNEL_VERSION=$(awk -F '-' '/KERNEL/{print $2}' include/kernel-$KERNEL | awk '{print $1}')
+if [ -d "$TEMP_DIR/package" ]; then
+    # 使用 cp -rn (不覆盖模式)，只提取 ImmortalWrt 没有的插件
+    cp -rn "$TEMP_DIR/package/"* package/
+    print_info $(color cg 整合) "FanchmWrt Packages" [ $(color cg ✔) ]
 else
-    KERNEL_VERSION=$(awk -F '-' '/KERNEL/{print $2}' target/linux/generic/kernel-$KERNEL | awk '{print $1}')
+    print_info $(color cr 错误) "FanchmWrt package dir not found" [ $(color cr ✕) ]
 fi
-echo "KERNEL_VERSION=$KERNEL_VERSION" >>$GITHUB_ENV
+rm -rf "$TEMP_DIR"
 
-# toolchain缓存文件名
-TOOLS_HASH=$(git log --pretty=tformat:"%h" -n1 tools toolchain)
-CACHE_NAME="$SOURCE_REPO-${REPO_BRANCH#*-}-$DEVICE_TARGET-cache-$TOOLS_HASH"
-echo "CACHE_NAME=$CACHE_NAME" >>$GITHUB_ENV
 
-# 源码更新信息
-COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")
-echo "COMMIT_AUTHOR=$COMMIT_AUTHOR" >>$GITHUB_ENV
-COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")
-echo "COMMIT_DATE=$COMMIT_DATE" >>$GITHUB_ENV
-COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")
-echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >>$GITHUB_ENV
-COMMIT_HASH=$(git show -s --date=short --format="hash: %H")
-echo "COMMIT_HASH=$COMMIT_HASH" >>$GITHUB_ENV
-status "生成全局变量"
+# =========================================================
+# 3. 下载第三方插件 (基于原脚本)
+# =========================================================
 
-# 下载部署toolchain缓存
-if [[ $TOOLCHAIN = 'true' ]]; then
-    cache_xa=$(curl -sL api.github.com/repos/$GITHUB_REPOSITORY/releases | awk -F '"' '/download_url/{print $4}' | grep $CACHE_NAME)
-    cache_xc=$(curl -sL api.github.com/repos/haiibo/toolchain-cache/releases | awk -F '"' '/download_url/{print $4}' | grep $CACHE_NAME)
-    if [[ $cache_xa || $cache_xc ]]; then
-        begin_time=$(date '+%H:%M:%S')
-        [ $cache_xa ] && wget -qc -t=3 $cache_xa || wget -qc -t=3 $cache_xc
-        [ -e *.tzst ] && {
-            tar -I unzstd -xf *.tzst || tar -xf *.tzst
-            [ $cache_xa ] || (cp *.tzst $GITHUB_WORKSPACE/output && echo "OUTPUT_RELEASE=true" >>$GITHUB_ENV)
-            [ -d staging_dir ] && sed -i 's/ $(tool.*\/stamp-compile)//' Makefile
-            status "下载部署toolchain缓存"
-        }
-    else
-        echo "REBUILD_TOOLCHAIN=true" >>$GITHUB_ENV
-    fi
-else
-    echo "REBUILD_TOOLCHAIN=true" >>$GITHUB_ENV
-fi
+# 创建统一存放目录
+mkdir -p package/A
 
-# 更新&安装插件
-begin_time=$(date '+%H:%M:%S')
-./scripts/feeds update -a 1>/dev/null 2>&1
-./scripts/feeds install -a 1>/dev/null 2>&1
-status "更新&安装插件"
-
-# 创建插件保存目录
-destination_dir="package/A"
-[ -d $destination_dir ] || mkdir -p $destination_dir
-
-# 添加额外插件
+# 广告过滤 & DNS
 clone_dir openwrt-23.05 https://github.com/coolsnowwolf/luci luci-app-adguardhome
 clone_all https://github.com/lwb1978/openwrt-gecoosac
 clone_dir https://github.com/sirpdboy/luci-app-ddns-go ddns-go luci-app-ddns-go
-
 clone_all https://github.com/sbwml/luci-app-alist
 clone_all https://github.com/sbwml/luci-app-mosdns
 git_clone https://github.com/sbwml/packages_lang_golang golang
 
+# iStore
 clone_all https://github.com/linkease/istore-ui
 clone_all https://github.com/linkease/istore luci
 
+# 流量监控
 clone_all https://github.com/brvphoenix/luci-app-wrtbwmon
 clone_all https://github.com/brvphoenix/wrtbwmon
 
-# 科学上网插件
+# 科学上网 (Passwall / OpenClash)
 clone_all https://github.com/fw876/helloworld
 clone_all https://github.com/Openwrt-Passwall/openwrt-passwall-packages
 clone_all https://github.com/Openwrt-Passwall/openwrt-passwall
@@ -256,7 +144,7 @@ clone_all https://github.com/nikkinikki-org/OpenWrt-momo
 clone_dir https://github.com/QiuSimons/luci-app-daed daed luci-app-daed
 git_clone https://github.com/immortalwrt/homeproxy luci-app-homeproxy
 
-# Themes
+# 主题 (Themes)
 git_clone https://github.com/kiddin9/luci-theme-edge
 git_clone https://github.com/jerrykuku/luci-theme-argon
 git_clone https://github.com/jerrykuku/luci-app-argon-config
@@ -265,105 +153,99 @@ git_clone https://github.com/eamonxg/luci-app-aurora-config
 git_clone https://github.com/sirpdboy/luci-theme-kucat
 git_clone https://github.com/sirpdboy/luci-app-kucat-config
 
-# 晶晨宝盒
+# 晶晨宝盒 (Amlogic)
 clone_all https://github.com/ophub/luci-app-amlogic
-sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/$GITHUB_REPOSITORY'|g" $destination_dir/luci-app-amlogic/root/etc/config/amlogic
-# sed -i "s|kernel_path.*|kernel_path 'https://github.com/ophub/kernel'|g" $destination_dir/luci-app-amlogic/root/etc/config/amlogic
-sed -i "s|ARMv8|$RELEASE_TAG|g" $destination_dir/luci-app-amlogic/root/etc/config/amlogic
-
-# 加载个人设置
-begin_time=$(date '+%H:%M:%S')
-
-[ -e $GITHUB_WORKSPACE/files ] && mv $GITHUB_WORKSPACE/files files
-
-# 设置固件rootfs大小
-if [ $PART_SIZE ]; then
-    sed -i '/ROOTFS_PARTSIZE/d' $GITHUB_WORKSPACE/$CONFIG_FILE
-    echo "CONFIG_TARGET_ROOTFS_PARTSIZE=$PART_SIZE" >>$GITHUB_WORKSPACE/$CONFIG_FILE
+if [ -d "package/A/luci-app-amlogic" ]; then
+    sed -i "s|firmware_repo.*|firmware_repo 'https://github.com/$GITHUB_REPOSITORY'|g" package/A/luci-app-amlogic/root/etc/config/amlogic
+    # 注意：RELEASE_TAG 在 workflow 环境变量中定义
+    sed -i "s|ARMv8|$RELEASE_TAG|g" package/A/luci-app-amlogic/root/etc/config/amlogic
 fi
 
-# 修改默认ip地址
-[ $IP_ADDRESS ] && sed -i '/n) ipad/s/".*"/"'"$IP_ADDRESS"'"/' package/base-files/files/bin/config_generate
 
-# 更改默认shell为zsh
-# sed -i 's/\/bin\/ash/\/usr\/bin\/zsh/g' package/base-files/files/etc/passwd
+# =========================================================
+# 4. 系统设置与个人优化 (基于原脚本)
+# =========================================================
 
-# ttyd免登录
+# 移动 files 目录 (如果仓库根目录有 files 文件夹，将其移入源码)
+# 注意：在 Actions 环境中，files 位于 $GITHUB_WORKSPACE/files，需要复制到当前目录
+if [ -d "$GITHUB_WORKSPACE/files" ]; then
+    cp -r $GITHUB_WORKSPACE/files files
+fi
+
+# 设置固件 rootfs 大小 (通过修改 config)
+# 注意：.config 文件此时可能还没生成，我们直接修改目标文件或等待 defconfig
+if [ -n "$PART_SIZE" ]; then
+    echo "CONFIG_TARGET_ROOTFS_PARTSIZE=$PART_SIZE" >> .config
+fi
+
+# 修改默认 IP (非常重要)
+# 之前的逻辑有误，这里使用标准的 sed 方式
+if [ -n "$IP_ADDRESS" ]; then
+    sed -i "s/192.168.1.1/$IP_ADDRESS/g" package/base-files/files/bin/config_generate
+fi
+
+# ttyd 免登录
 sed -i 's|/bin/login|/bin/login -f root|g' feeds/packages/utils/ttyd/files/ttyd.config
 
-# 设置root用户密码为password
+# 设置 root 密码为 password
 sed -i 's/root:::0:99999:7:::/root:$1$V4UetPzk$CYXluq4wUazHjmCDBCqXF.::0:99999:7:::/g' package/base-files/files/etc/shadow
 
-# 更改argon主题背景
-cp -f $GITHUB_WORKSPACE/images/bg1.jpg feeds/luci/themes/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
+# 更改 Argon 主题背景 (如果有图片)
+if [ -f "$GITHUB_WORKSPACE/images/bg1.jpg" ]; then
+    cp -f $GITHUB_WORKSPACE/images/bg1.jpg feeds/luci/themes/luci-theme-argon/htdocs/luci-static/argon/img/bg1.jpg
+fi
 
-# 删除主题默认设置
-# find $destination_dir/luci-theme-*/ -type f -name '*luci-theme-*' -exec sed -i '/set luci.main.mediaurlbase/d' {} +
-
-# 设置nlbwmon独立菜单
-sed -i 's/services\/nlbw/nlbw/g; /path/s/admin\///g' feeds/luci/applications/luci-app-nlbwmon/root/usr/share/luci/menu.d/luci-app-nlbwmon.json
-sed -i 's/services\///g' feeds/luci/applications/luci-app-nlbwmon/htdocs/luci-static/resources/view/nlbw/config.js
-
-# 修复Makefile路径
-find $destination_dir -type f -name "Makefile" | xargs sed -i \
+# 修复 Makefile 路径引用问题
+find package/A -type f -name "Makefile" | xargs sed -i \
     -e 's?\.\./\.\./\(lang\|devel\)?$(TOPDIR)/feeds/packages/\1?' \
     -e 's?\.\./\.\./luci.mk?$(TOPDIR)/feeds/luci/luci.mk?'
 
-# 修改qca-nss-drv启动顺序
-drv_path="feeds/nss_packages/qca-nss-drv/files/qca-nss-drv.init"
-if [ -f "$drv_path" ]; then
-    sed -i 's/START=.*/START=85/g' $drv_path
-fi
-
-# 修改qca-nss-pbuf启动顺序
-pbuf_path="package/kernel/mac80211/files/qca-nss-pbuf.init"
-if [ -f "$pbuf_path" ]; then
-    sed -i 's/START=.*/START=86/g' $pbuf_path
-fi
-
-# 移除attendedsysupgrade
+# 移除 attendedsysupgrade (防止编译冲突)
 find "feeds/luci/collections" -name "Makefile" | while read -r makefile; do
     if grep -q "luci-app-attendedsysupgrade" "$makefile"; then
         sed -i "/luci-app-attendedsysupgrade/d" "$makefile"
     fi
 done
 
-# 转换插件语言翻译
-for e in $(ls -d $destination_dir/luci-*/po feeds/luci/applications/luci-*/po); do
+# 转换插件语言翻译 (zh-cn -> zh_Hans)
+for e in $(ls -d package/A/luci-*/po feeds/luci/applications/luci-*/po 2>/dev/null); do
     if [[ -d $e/zh-cn && ! -d $e/zh_Hans ]]; then
         ln -s zh-cn $e/zh_Hans 2>/dev/null
     elif [[ -d $e/zh_Hans && ! -d $e/zh-cn ]]; then
         ln -s zh_Hans $e/zh-cn 2>/dev/null
     fi
 done
-status "加载个人设置"
 
-# 更新配置文件
-begin_time=$(date '+%H:%M:%S')
-[ -e $GITHUB_WORKSPACE/$CONFIG_FILE ] && cp -f $GITHUB_WORKSPACE/$CONFIG_FILE .config
-make defconfig 1>/dev/null 2>&1
-status "更新配置文件"
+# =========================================================
+# 5. 生成元数据与收尾 (保留信息生成)
+# =========================================================
 
-# 下载openclash运行内核
-[[ $CLASH_KERNEL =~ amd64|arm64|armv7|armv6|armv5|386 ]] && grep -q "luci-app-openclash=y" .config && {
-    begin_time=$(date '+%H:%M:%S')
-    chmod +x $GITHUB_WORKSPACE/scripts/preset-clash-core.sh
-    $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
-    status "下载openclash运行内核"
-}
+# 导出一些变量供 Release 使用
+# 注意：不要在这里执行 make defconfig，workflow 会在脚本运行后统一执行
 
-# 下载zsh终端工具
-if grep -q "zsh=y" .config; then
-    begin_time=$(date '+%H:%M:%S')
-    chmod +x $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
-    $GITHUB_WORKSPACE/scripts/preset-terminal-tools.sh
-    status "下载zsh终端工具"
+# 尝试获取内核版本用于显示
+KERNEL_TEST=$(ls target/linux/ipq60xx/Makefile 2>/dev/null)
+if [ -n "$KERNEL_TEST" ]; then
+    KERNEL_PATCHVER=$(grep -oP 'KERNEL_PATCHVER:=\K[^ ]+' target/linux/ipq60xx/Makefile)
+    echo "KERNEL_VERSION=$KERNEL_PATCHVER" >> $GITHUB_ENV
+else
+    echo "KERNEL_VERSION=Unknown" >> $GITHUB_ENV
 fi
 
-echo -e "$(color cy 当前编译机型) $(color cb $SOURCE_REPO-${REPO_BRANCH#*-}-$DEVICE_TARGET-$KERNEL_VERSION)"
+# 获取 Commit 信息
+if [ -d .git ]; then
+    echo "COMMIT_AUTHOR=$(git show -s --date=short --format="作者: %an")" >> $GITHUB_ENV
+    echo "COMMIT_DATE=$(git show -s --date=short --format="时间: %ci")" >> $GITHUB_ENV
+    echo "COMMIT_MESSAGE=$(git show -s --date=short --format="内容: %s")" >> $GITHUB_ENV
+    echo "COMMIT_HASH=$(git show -s --date=short --format="hash: %H")" >> $GITHUB_ENV
+fi
 
-# 更改固件文件名
-# sed -i "s/\$(VERSION_DIST_SANITIZED)/$SOURCE_REPO-${REPO_BRANCH#*-}-$KERNEL_VERSION/" include/image.mk
-# sed -i "/IMG_PREFIX:/ {s/=/=$SOURCE_REPO-${REPO_BRANCH#*-}-$KERNEL_VERSION-\$(shell date +%y.%m.%d)-/}" include/image.mk
+# 预下载 OpenClash 内核 (如果有脚本)
+if [[ $CLASH_KERNEL =~ amd64|arm64|armv7|armv6|armv5|386 ]]; then
+    if [ -f "$GITHUB_WORKSPACE/scripts/preset-clash-core.sh" ]; then
+        chmod +x $GITHUB_WORKSPACE/scripts/preset-clash-core.sh
+        $GITHUB_WORKSPACE/scripts/preset-clash-core.sh $CLASH_KERNEL
+    fi
+fi
 
-color cp "脚本运行完成！"
+color cg "IMMWRT.SH 脚本执行完毕！"
