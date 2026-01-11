@@ -1,17 +1,17 @@
 #!/bin/bash
 
 # =========================================================
-# 1. 预置函数定义 (保留原脚本的工具函数)
+# 1. 预置函数定义
 # =========================================================
 
 color() {
     case $1 in
-        cr) echo -e "\e[1;31m$2\e[0m" ;;  # 红色
-        cg) echo -e "\e[1;32m$2\e[0m" ;;  # 绿色
-        cy) echo -e "\e[1;33m$2\e[0m" ;;  # 黄色
-        cb) echo -e "\e[1;34m$2\e[0m" ;;  # 蓝色
-        cp) echo -e "\e[1;35m$2\e[0m" ;;  # 紫色
-        cc) echo -e "\e[1;36m$2\e[0m" ;;  # 青色
+        cr) echo -e "\e[1;31m$2\e[0m" ;;
+        cg) echo -e "\e[1;32m$2\e[0m" ;;
+        cy) echo -e "\e[1;33m$2\e[0m" ;;
+        cb) echo -e "\e[1;34m$2\e[0m" ;;
+        cp) echo -e "\e[1;35m$2\e[0m" ;;
+        cc) echo -e "\e[1;36m$2\e[0m" ;;
     esac
 }
 
@@ -23,9 +23,8 @@ find_dir() {
     find $1 -maxdepth 3 -type d -name $2 -print -quit 2>/dev/null
 }
 
-# 核心克隆函数
 git_clone() {
-    local repo_url branch target_dir current_dir
+    local repo_url branch target_dir
     if [[ "$1" == */* ]]; then
         repo_url="$1"
         shift
@@ -89,7 +88,7 @@ clone_all() {
 
 
 # =========================================================
-# 2. 整合 roy6222226/fanchmwrt 的代码
+# 2. 整合 FanchmWrt 代码 (严格过滤版)
 # =========================================================
 echo "正在整合 FanchmWrt 插件..."
 
@@ -98,27 +97,33 @@ rm -rf "$TEMP_DIR"
 git clone --depth 1 https://github.com/roy6222226/fanchmwrt.git "$TEMP_DIR"
 
 if [ -d "$TEMP_DIR/package" ]; then
-    # 使用 cp -rn (不覆盖模式)，只提取 ImmortalWrt 没有的插件
+    # ---------------------------------------------------------
+    # 🛡️ 净化步骤：在复制前，彻底删除不兼容的 Master 系统组件
+    # ---------------------------------------------------------
+    echo "执行排毒操作：剔除不兼容的 Master 核心包..."
+    
+    rm -rf "$TEMP_DIR/package/base-files"      # 防止 IP/网络配置冲突
+    rm -rf "$TEMP_DIR/package/kernel"          # 防止内核版本冲突
+    rm -rf "$TEMP_DIR/package/system"          # 彻底移除 apk/procd 等核心
+    rm -rf "$TEMP_DIR/package/boot"            # 移除引导相关
+    rm -rf "$TEMP_DIR/package/libs/toolchain"  # 🔥 关键：移除导致报错的工具链
+    rm -rf "$TEMP_DIR/package/network"         # 建议移除网络底层，防止 firewall4 冲突
+    
+    # ---------------------------------------------------------
+    # 📋 复制剩余内容 (主要是应用插件)
+    # ---------------------------------------------------------
+    # cp -rn : 递归复制，不覆盖已存在的文件
     cp -rn "$TEMP_DIR/package/"* package/
     
-    # 🚨🚨🚨 【最终修正步骤】 🚨🚨🚨
-    echo "正在清理不兼容的 Master 核心包..."
-    
-    # 1. 删除 OpenWrt Master 分支特有的包管理器 (23.05 不支持)
-    rm -rf package/system/apk
-    rm -rf package/system/installer
-    
-    # ⚠️ 删除了之前错误的 rm -rf package/kernel
-    # ⚠️ 删除了之前错误的 rm -rf package/base-files
-    
-    print_info $(color cg 整合) "FanchmWrt Packages (已清理冲突)" [ $(color cg ✔) ]
+    print_info $(color cg 整合) "FanchmWrt Packages (净化完成)" [ $(color cg ✔) ]
 else
     print_info $(color cr 错误) "FanchmWrt package dir not found" [ $(color cr ✕) ]
 fi
 rm -rf "$TEMP_DIR"
 
+
 # =========================================================
-# 3. 下载第三方插件 (基于原脚本)
+# 3. 下载第三方插件
 # =========================================================
 
 mkdir -p package/A
@@ -167,7 +172,7 @@ if [ -d "package/A/luci-app-amlogic" ]; then
 fi
 
 # =========================================================
-# 4. 系统设置与个人优化 (基于原脚本)
+# 4. 系统设置与个人优化
 # =========================================================
 
 if [ -d "$GITHUB_WORKSPACE/files" ]; then
@@ -180,6 +185,7 @@ fi
 
 # 修改默认 IP
 if [ -n "$IP_ADDRESS" ]; then
+    # 这里的路径是 23.05 的标准路径，因为我们没删 base-files，所以一定存在
     sed -i "s/192.168.1.1/$IP_ADDRESS/g" package/base-files/files/bin/config_generate
 fi
 
